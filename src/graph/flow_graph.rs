@@ -61,35 +61,59 @@ impl FlowGraph {
         DotRendererPass::render(&styled)
     }
 
+    fn get_function_nodes(&self, start_node: NodeIndex) -> HashSet<NodeIndex> {
+        let mut nodes = HashSet::new();
+        let mut stack = vec![start_node];
+        
+        while let Some(node_id) = stack.pop() {
+            if nodes.insert(node_id) {
+                for edge in self.graph.edges(node_id) {
+                    stack.push(edge.target());
+                }
+            }
+        }
+        nodes
+    }
+
+    fn is_function_start(&self, node_id: NodeIndex) -> bool {
+        if let Some(NodeType::Start(_, _)) = self.graph.node_weight(node_id) {
+            true
+        } else {
+            false
+        }
+    }
+
     fn get_visible_nodes(&self) -> HashSet<NodeIndex> {
-        self.graph.node_references()
-            .filter(|(_, node)| self.config.include_tests || !node.is_test())
-            .map(|(id, _)| id)
-            .collect()
+        let mut visible_nodes = HashSet::new();
+        let mut test_function_nodes = HashSet::new();
+
+        for (id, node) in self.graph.node_references() {
+            if let NodeType::Start(_, is_test) = node {
+                if *is_test {
+                    test_function_nodes.extend(self.get_function_nodes(id));
+                }
+            }
+        }
+
+        for (id, _) in self.graph.node_references() {
+            if self.config.include_tests || !test_function_nodes.contains(&id) {
+                visible_nodes.insert(id);
+            }
+        }
+
+        visible_nodes
     }
 
     pub fn nodes(&self) -> impl Iterator<Item = (NodeIndex, &NodeType)> {
         let visible_nodes = self.get_visible_nodes();
         self.graph.node_references()
-            .filter(move |(id, node)| {
-                if !self.config.include_tests && node.is_test() {
-                    return false;
-                }
-                visible_nodes.contains(id)
-            })
+            .filter(move |(id, _)| visible_nodes.contains(id))
     }
 
     pub fn edges(&self) -> impl Iterator<Item = (NodeIndex, NodeIndex, &String)> {
         let visible_nodes = self.get_visible_nodes();
         self.graph.edge_references()
             .filter(move |e| {
-                let source_node = self.graph.node_weight(e.source()).unwrap();
-                let target_node = self.graph.node_weight(e.target()).unwrap();
-                
-                if !self.config.include_tests && (source_node.is_test() || target_node.is_test()) {
-                    return false;
-                }
-
                 visible_nodes.contains(&e.source()) && visible_nodes.contains(&e.target())
             })
             .map(|e| (e.source(), e.target(), e.weight()))
