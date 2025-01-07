@@ -1,6 +1,6 @@
 use crate::graph::{FlowGraph, NodeType};
 use petgraph::graph::NodeIndex;
-use syn::{Block, Expr, ExprIf, ExprLoop, ExprMatch, ExprWhile, ItemFn, Stmt};
+use syn::{Block, Expr, ExprIf, ExprLoop, ExprMatch, ExprWhile, ItemFn, Stmt, ExprForLoop};
 use quote::quote;
 
 pub struct ControlFlowAnalyzerPass<'a> {
@@ -51,6 +51,9 @@ impl<'a> ControlFlowAnalyzerPass<'a> {
                         }
                         Expr::Loop(expr_loop) => {
                             last_node = self.analyze_loop(expr_loop, last_node);
+                        }
+                        Expr::ForLoop(expr_for) => {
+                            last_node = self.analyze_for(expr_for, last_node);
                         }
                         Expr::Match(expr_match) => {
                             last_node = self.analyze_match(expr_match, last_node);
@@ -177,5 +180,24 @@ impl<'a> ControlFlowAnalyzerPass<'a> {
         }
 
         merge_node
+    }
+
+    fn analyze_for(&mut self, expr_for: &ExprForLoop, parent: NodeIndex) -> NodeIndex {
+        // 创建for循环节点，显示迭代器表达式
+        let loop_text = format!("for {} in {}", quote!(#expr_for.pat), quote!(#expr_for.expr));
+        let loop_node = self.graph.add_node(NodeType::Loop(loop_text));
+        self.graph.add_edge(parent, loop_node, "进入循环".to_string());
+
+        // 分析循环体
+        let body_node = self.analyze_block(&expr_for.body, Some(loop_node));
+        
+        // 添加循环返回边
+        self.graph.add_edge(body_node, loop_node, "继续循环".to_string());
+
+        // 创建循环出口节点
+        let exit_node = self.graph.add_node(NodeType::BasicBlock("循环结束".to_string()));
+        self.graph.add_edge(loop_node, exit_node, "退出循环".to_string());
+
+        exit_node
     }
 } 

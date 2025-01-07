@@ -12,7 +12,13 @@ impl NodeType {
         match self {
             NodeType::Start(name) => format!("Start: {}", name),
             NodeType::End(name) => format!("End: {}", name),
-            NodeType::BasicBlock(content) => content.clone(),
+            NodeType::BasicBlock(content) => {
+                let mut result = content.replace(";", ";\n");
+                if result.ends_with('\n') {
+                    result.pop();
+                }
+                result
+            },
             NodeType::Condition(cond) => format!("Condition: {}", cond),
             NodeType::Loop(kind) => format!("Loop: {}", kind),
         }
