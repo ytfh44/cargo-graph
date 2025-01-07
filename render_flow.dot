@@ -1,0 +1,49 @@
+
+            digraph G {
+                // 使用自上而下的布局
+                graph [
+                    rankdir=TB,
+                    nodesep=0.5,
+                    ranksep=0.7,
+                    splines=ortho,  // 使用正交线条
+                    concentrate=true // 合并平行边
+                ];
+                
+                // 统一的节点样式
+                node [
+                    fontname="Arial",
+                    fontsize=10,
+                    margin="0.2,0.2",
+                    height=0.4,
+                    width=0.4
+                ];
+                
+                // 统一的边样式
+                edge [
+                    fontname="Arial",
+                    fontsize=10,
+                    dir=forward,
+                    arrowsize=0.8,
+                    penwidth=1
+                ];
+                
+                    node_0 [label="Start: render", shape=circle, style="filled", fillcolor="lightgreen"];
+    node_1 [label="获取样式", shape=box, style="rounded", fillcolor="white"];
+    node_2 [label="Condition: 是否为基本块?", shape=diamond, style="filled", fillcolor="lightyellow"];
+    node_3 [label="应用圆角样式", shape=box, style="rounded", fillcolor="white"];
+    node_4 [label="应用填充样式", shape=box, style="rounded", fillcolor="white"];
+    node_5 [label="End: render", shape=circle, style="filled", fillcolor="lightpink"];
+                
+                    node_0 -> node_1 [label="开始", color="black", style="solid"];
+    node_1 -> node_2 [label="获取完成", color="black", style="solid"];
+    node_2 -> node_3 [label="是", color="black", style="solid"];
+    node_2 -> node_4 [label="否", color="black", style="solid"];
+    node_3 -> node_5 [label="完成", color="black", style="solid"];
+    node_4 -> node_5 [label="完成", color="black", style="solid"];
+                
+                // 强制开始节点在最上方
+                { rank=source; node [shape=circle]; }
+                // 强制结束节点在最下方
+                { rank=sink; node [shape=circle]; }
+            }
+        

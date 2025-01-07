@@ -1,0 +1,27 @@
+[package]
+name = "cargo-graph"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cargo = "0.75.1"
+syn = { version = "2.0", features = ["full", "visit", "extra-traits", "parsing"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+walkdir = "2.4.0"
+petgraph = "0.7.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11.6"
+graphviz-rust = "0.9.3"
+
+[lib]
+name = "cargo_graph"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cargo-graph"
+path = "src/main.rs"
