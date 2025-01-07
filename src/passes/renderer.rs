@@ -38,8 +38,8 @@ impl DotRendererPass {
         
         // 添加节点
         for node in &graph.nodes {
-            // 处理标签中的特殊字符
-            let escaped_label = Self::escape_label(&node.label);
+            // 处理标签中的特殊字符，并在分号处添加换行
+            let escaped_label = Self::process_label_with_newlines(&node.label);
             
             // 根据节点类型设置形状和样式
             dot.push_str(&format!("    node_{} [label=\"{}\", shape=\"{}\", style=\"{}\", fillcolor=\"{}\"];\n",
@@ -59,6 +59,15 @@ impl DotRendererPass {
         dot
     }
 
+    /// 转义 DOT 标签中的特殊字符，并在分号处添加换行
+    fn process_label_with_newlines(label: &str) -> String {
+        // 先用换行符替换分号，然后对每个部分进行转义
+        label.split(';')
+            .map(|part| Self::escape_label(part.trim()))
+            .collect::<Vec<_>>()
+            .join("\\n")
+    }
+
     /// 转义 DOT 标签中的特殊字符
     fn escape_label(label: &str) -> String {
         label
@@ -73,7 +82,6 @@ impl DotRendererPass {
             .replace('|', "\\|")
             .replace('(', "\\(")
             .replace(')', "\\)")
-            .replace(';', "\\;")
             .replace(':', "\\:")
             .replace('.', "\\.")
             .replace('=', "\\=")
