@@ -1,247 +1,247 @@
-use anyhow::{Context, Result};
-use cargo_graph::{
-    analyze_file_with_renderer,
-    CStyleFlowchartRenderer,
-    DotRenderer,
-    GraphRenderer,
-};
-use clap::Parser;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::collections::HashMap;
 use walkdir::WalkDir;
+use anyhow::{Result, bail};
+use clap::Parser;
+use cargo_graph::{analyze_file_with_renderer, DotRenderer, CStyleFlowchartRenderer, GraphRenderer};
 
-#[derive(Parser)]
-#[command(name = "cargo-graph")]
-#[command(bin_name = "cargo-graph")]
-struct Cli {
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long)]
+    input: Option<PathBuf>,
+    
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    
+    #[arg(short, long, default_value = "svg")]
+    format: String,
+    
+    #[arg(short, long, default_value = "default")]
+    style: String,
+    
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
-#[derive(clap::Subcommand)]
+#[derive(clap::Subcommand, Debug)]
 enum Commands {
-    Graph(Args),
+    Graph,
 }
 
-#[derive(clap::Args)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// 要分析的Rust源文件路径（可选，默认分析整个crate）
-    #[arg(short = 'i', long)]
-    file: Option<PathBuf>,
-
-    /// 输出文件路径（可选，默认输出到标准输出）
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// 输出格式 (dot, svg, png)
-    #[arg(short = 'f', long, default_value = "svg")]
-    format: String,
-
-    /// 流程图样式 (default, c-style)
-    #[arg(short, long, default_value = "c-style")]
-    style: String,
+fn get_crate_root() -> Result<PathBuf> {
+    let current_dir = std::env::current_dir()?;
+    let cargo_toml = current_dir.join("Cargo.toml");
+    
+    if cargo_toml.exists() {
+        Ok(current_dir)
+    } else {
+        bail!("Could not find Cargo.toml in current directory or any parent directory")
+    }
 }
 
-fn find_rust_files(path: &Path) -> Vec<PathBuf> {
-    WalkDir::new(path)
+fn find_rust_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    
+    for entry in WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.path().extension().map_or(false, |ext| ext == "rs") &&
-            !e.path().to_string_lossy().contains("target") &&
-            !e.path().to_string_lossy().contains("tests")  // 排除测试文件
+            !e.path().to_string_lossy().contains("target") // 排除 target 目录
         })
-        .map(|e| e.path().to_path_buf())
-        .collect()
-}
-
-fn find_cargo_toml() -> Result<PathBuf> {
-    let mut current_dir = std::env::current_dir()?;
-    loop {
-        let cargo_toml = current_dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            return Ok(cargo_toml);
-        }
-        if !current_dir.pop() {
-            anyhow::bail!("Could not find Cargo.toml in any parent directory");
-        }
+    {
+        files.push(entry.path().to_path_buf());
     }
-}
-
-fn get_crate_root() -> Result<PathBuf> {
-    let cargo_toml = find_cargo_toml()?;
-    Ok(cargo_toml.parent().unwrap().to_path_buf())
-}
-
-fn get_module_name(file: &Path, crate_root: &Path) -> String {
-    file.strip_prefix(crate_root)
-        .ok()
-        .and_then(|p| p.to_str())
-        .map(|s| s.replace('/', "::").replace(".rs", ""))
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn merge_graphs(graphs: Vec<(String, String)>) -> String {
-    let mut merged = String::from(r#"digraph G {
-    // 使用自上而下的布局
-    graph [
-        rankdir=TB;
-        nodesep=0.5;
-        ranksep=0.7;
-        splines=ortho;
-        concentrate=true
-    ];
     
-    // 统一的节点样式
-    node [
-        fontname="Arial";
-        fontsize=10;
-        margin="0.2,0.2";
-        height=0.4;
-        width=0.4
-    ];
-    
-    // 统一的边样式
-    edge [
-        fontname="Arial";
-        fontsize=10;
-        dir=forward;
-        arrowsize=0.8;
-        penwidth=1
-    ];"#);
-
-    // 添加所有子图
-    for (module_name, graph) in graphs {
-        let subgraph = graph
-            .lines()
-            .filter(|line| !line.contains("digraph") && !line.contains("graph [") && !line.contains("node [") && !line.contains("edge ["))
-            .collect::<Vec<_>>()
-            .join("\n");
-        
-        // 转义模块名中的特殊字符
-        let safe_module_name = module_name.replace('-', "_").replace(':', "_");
-        
-        merged.push_str(&format!(r#"
-    subgraph cluster_{} {{
-        label="{}";
-        style=rounded;
-        color=gray;
-        {}
-    }}"#, safe_module_name, module_name, subgraph));
-    }
-
-    merged.push_str("\n}\n");
-    merged
+    Ok(files)
 }
 
-fn analyze_crate<R: GraphRenderer>(crate_root: &Path, renderer: &R) -> Result<String> {
-    let rust_files = find_rust_files(crate_root);
+fn analyze_crate(crate_root: &Path, renderer: &dyn GraphRenderer) -> Result<String> {
+    let rust_files = find_rust_files(crate_root)?;
+    println!("Found {} Rust files", rust_files.len());
+    
     let mut graphs = Vec::new();
     
+    // 按模块分组处理文件
+    let mut module_files: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    
     for file in rust_files {
-        let module_name = get_module_name(&file, crate_root);
-        match analyze_file_with_renderer(&file, renderer) {
-            Ok(graph) => graphs.push((module_name, graph)),
-            Err(e) => eprintln!("Warning: Failed to analyze {}: {}", file.display(), e),
+        let relative_path = file.strip_prefix(crate_root)?.to_str().unwrap().to_string();
+        println!("Processing file: {} as module: {}", file.display(), relative_path);
+        
+        let module_name = relative_path.replace(".rs", "");
+        module_files.entry(module_name.clone())
+            .or_default()
+            .push(file);
+    }
+    
+    // 分析每个模块
+    for (module_name, files) in module_files {
+        println!("Analyzing module: {} with {} files", module_name, files.len());
+        
+        for file in files {
+            match analyze_file_with_renderer(&file, renderer) {
+                Ok(graph) => {
+                    println!("Successfully analyzed {}", file.display());
+                    graphs.push((module_name.clone(), graph));
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to analyze {}: {}", file.display(), e);
+                }
+            }
         }
     }
     
-    if graphs.is_empty() {
-        anyhow::bail!("No Rust files found or all analyses failed");
-    }
-    
+    println!("Generated {} graphs", graphs.len());
     Ok(merge_graphs(graphs))
 }
 
-fn generate_graph(args: &Args) -> Result<String> {
-    match args.style.as_str() {
-        "default" => {
-            let renderer = DotRenderer::default();
-            if let Some(file) = &args.file {
-                analyze_file_with_renderer(file, &renderer)
-            } else {
-                let crate_root = get_crate_root()?;
-                analyze_crate(&crate_root, &renderer)
+fn merge_graphs(graphs: Vec<(String, String)>) -> String {
+    let mut merged = String::from("digraph G {\n");
+    
+    // 添加全局属性
+    merged.push_str("    graph [\n");
+    merged.push_str("        rankdir=TB;\n");
+    merged.push_str("        nodesep=1.2;\n");
+    merged.push_str("        ranksep=1.5;\n");
+    merged.push_str("        splines=ortho;\n");
+    merged.push_str("        concentrate=true;\n");
+    merged.push_str("        compound=true;\n");
+    merged.push_str("        newrank=true\n");
+    merged.push_str("    ];\n\n");
+    
+    // 添加全局节点属性
+    merged.push_str("    node [\n");
+    merged.push_str("        fontname=\"Arial\";\n");
+    merged.push_str("        fontsize=12;\n");
+    merged.push_str("        margin=\"0.5,0.3\";\n");
+    merged.push_str("        height=0;\n");
+    merged.push_str("        width=0\n");
+    merged.push_str("    ];\n\n");
+    
+    // 添加全局边属性
+    merged.push_str("    edge [\n");
+    merged.push_str("        fontname=\"Arial\";\n");
+    merged.push_str("        fontsize=10;\n");
+    merged.push_str("        dir=forward;\n");
+    merged.push_str("        arrowsize=0.8;\n");
+    merged.push_str("        penwidth=1;\n");
+    merged.push_str("        minlen=2\n");
+    merged.push_str("    ];\n\n");
+    
+    // 合并所有子图
+    for (file_name, graph_content) in graphs {
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        
+        // 解析子图内容
+        for line in graph_content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("digraph") || line.starts_with("}") {
+                continue;
             }
-        },
-        "c-style" => {
-            let renderer = CStyleFlowchartRenderer::default();
-            if let Some(file) = &args.file {
-                analyze_file_with_renderer(file, &renderer)
-            } else {
-                let crate_root = get_crate_root()?;
-                analyze_crate(&crate_root, &renderer)
-            }
-        },
-        style => anyhow::bail!("Unsupported style: {}", style),
-    }
-}
-
-fn convert_to_format(dot_content: String, format: &str, output: &PathBuf) -> Result<()> {
-    match format {
-        "dot" => {
-            std::fs::write(output, dot_content)?;
-        }
-        "svg" | "png" => {
-            let temp_dot = output.with_extension("dot");
-            std::fs::write(&temp_dot, dot_content)?;
             
-            let status = Command::new("dot")
-                .arg(format!("-T{}", format))
-                .arg(&temp_dot)
-                .arg("-o")
-                .arg(output)
-                .status()
-                .context("Failed to execute dot command. Is Graphviz installed?")?;
-
-            std::fs::remove_file(temp_dot)?;
-            
-            if !status.success() {
-                anyhow::bail!("dot command failed");
+            if line.contains("->") {
+                // 处理边
+                edges.push(format!("        {}", line));
+            } else if line.contains("node_") && line.contains("[") && line.contains("]") {
+                // 处理节点
+                let mut node_line = line.to_string();
+                
+                // 根据节点类型设置不同的形状
+                if node_line.contains("Condition:") {
+                    node_line = node_line.replace("shape=\"oval\"", "shape=\"diamond\"");
+                } else if node_line.contains("Loop:") {
+                    node_line = node_line.replace("shape=\"oval\"", "shape=\"hexagon\"");
+                } else {
+                    node_line = node_line.replace("shape=\"oval\"", "shape=\"box\"");
+                }
+                
+                nodes.push(format!("        {}", node_line));
             }
         }
-        _ => anyhow::bail!("Unsupported output format: {}", format),
+        
+        // 只有当有实际内容时才创建子图
+        if !nodes.is_empty() || !edges.is_empty() {
+            // 处理文件名，使其适合作为子图名称
+            let cluster_name = file_name.replace('\\', "_").replace('/', "_").replace('.', "_");
+            let display_name = file_name.replace('\\', "/");
+            
+            merged.push_str(&format!("    subgraph cluster_{} {{\n", cluster_name));
+            merged.push_str(&format!("        label=\"{}\";\n", display_name));
+            merged.push_str("        style=rounded;\n");
+            merged.push_str("        color=gray;\n");
+            merged.push_str("        bgcolor=aliceblue;\n");
+            merged.push_str("        fontsize=12;\n");
+            merged.push_str("        margin=16;\n");
+            merged.push_str("        node [style=filled];\n\n");
+            
+            // 先添加所有节点
+            if !nodes.is_empty() {
+                merged.push_str(&nodes.join("\n"));
+                merged.push_str("\n");
+            }
+            
+            // 再添加所有边
+            if !edges.is_empty() {
+                merged.push_str(&edges.join("\n"));
+                merged.push_str("\n");
+            }
+            
+            merged.push_str("    }\n\n");
+        }
     }
-    Ok(())
+    
+    merged.push_str("}\n");
+    merged
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
-
-    let cli = Cli::parse();
-    let args = if let Some(Commands::Graph(args)) = cli.command {
-        args
-    } else {
-        Args {
-            file: None,
-            output: None,
-            format: "svg".to_string(),
-            style: "c-style".to_string(),
-        }
-    };
+    let args = Args::parse();
     
-    // 如果指定了文件，确保文件存在
-    if let Some(file) = &args.file {
-        if !file.exists() {
-            anyhow::bail!("Input file does not exist: {}", file.display());
-        }
-    }
-
-    // 生成图的DOT描述
-    let dot_content = generate_graph(&args)?;
-
-    // 处理输出
-    match &args.output {
-        Some(output_path) => {
-            convert_to_format(dot_content, &args.format, output_path)?;
+    match args.command {
+        Some(Commands::Graph) => {
+            let renderer: Box<dyn GraphRenderer> = match args.style.as_str() {
+                "default" => Box::new(DotRenderer::default()),
+                "c-style" => Box::new(CStyleFlowchartRenderer::default()),
+                style => bail!("Unsupported style: {}", style),
+            };
+            
+            let output_path = args.output.unwrap_or_else(|| {
+                PathBuf::from(format!("crate_flow.{}", args.format))
+            });
+            
+            // 生成 DOT 内容
+            let dot_content = if let Some(input_file) = args.input {
+                analyze_file_with_renderer(&input_file, &*renderer)?
+            } else {
+                let crate_root = get_crate_root()?;
+                analyze_crate(&crate_root, &*renderer)?
+            };
+            
+            // 创建临时 DOT 文件
+            let temp_dot = output_path.with_extension("dot");
+            std::fs::write(&temp_dot, dot_content)?;
+            
+            // 使用 dot 命令转换为 SVG
+            let status = std::process::Command::new("dot")
+                .args(["-Tsvg", temp_dot.to_str().unwrap(), "-o", output_path.to_str().unwrap()])
+                .status()?;
+                
+            // 删除临时文件
+            std::fs::remove_file(temp_dot)?;
+            
+            if !status.success() {
+                bail!("Failed to convert DOT to SVG");
+            }
+            
             println!("Flow chart saved to: {}", output_path.display());
+            Ok(())
         }
         None => {
-            // 如果没有指定输出文件，直接打印DOT内容
-            println!("{}", dot_content);
+            println!("Please use 'cargo graph' instead of 'cargo-graph'");
+            Ok(())
         }
     }
-
-    Ok(())
 }
