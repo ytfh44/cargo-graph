@@ -1,13 +1,27 @@
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::{IntoNodeReferences, EdgeRef};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::graph::NodeType;
 use crate::passes::{StylerPass, DotRendererPass};
+
+#[derive(Debug, Clone)]
+pub struct GraphConfig {
+    pub include_tests: bool,
+}
+
+impl Default for GraphConfig {
+    fn default() -> Self {
+        Self {
+            include_tests: false,
+        }
+    }
+}
 
 pub struct FlowGraph {
     pub(crate) graph: DiGraph<NodeType, String>,
     #[allow(dead_code)]
     node_map: HashMap<String, NodeIndex>,
+    config: GraphConfig,
 }
 
 impl Default for FlowGraph {
@@ -21,6 +35,15 @@ impl FlowGraph {
         FlowGraph {
             graph: DiGraph::new(),
             node_map: HashMap::new(),
+            config: GraphConfig::default(),
+        }
+    }
+
+    pub fn with_config(config: GraphConfig) -> Self {
+        FlowGraph {
+            graph: DiGraph::new(),
+            node_map: HashMap::new(),
+            config,
         }
     }
 
@@ -38,12 +61,45 @@ impl FlowGraph {
         DotRendererPass::render(&styled)
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item = (NodeIndex, &NodeType)> {
+    fn get_visible_nodes(&self) -> HashSet<NodeIndex> {
         self.graph.node_references()
+            .filter(|(_, node)| self.config.include_tests || !node.is_test())
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    pub fn nodes(&self) -> impl Iterator<Item = (NodeIndex, &NodeType)> {
+        let visible_nodes = self.get_visible_nodes();
+        self.graph.node_references()
+            .filter(move |(id, node)| {
+                if !self.config.include_tests && node.is_test() {
+                    return false;
+                }
+                visible_nodes.contains(id)
+            })
     }
 
     pub fn edges(&self) -> impl Iterator<Item = (NodeIndex, NodeIndex, &String)> {
+        let visible_nodes = self.get_visible_nodes();
         self.graph.edge_references()
+            .filter(move |e| {
+                let source_node = self.graph.node_weight(e.source()).unwrap();
+                let target_node = self.graph.node_weight(e.target()).unwrap();
+                
+                if !self.config.include_tests && (source_node.is_test() || target_node.is_test()) {
+                    return false;
+                }
+
+                visible_nodes.contains(&e.source()) && visible_nodes.contains(&e.target())
+            })
             .map(|e| (e.source(), e.target(), e.weight()))
+    }
+
+    pub fn config(&self) -> &GraphConfig {
+        &self.config
+    }
+
+    pub fn set_config(&mut self, config: GraphConfig) {
+        self.config = config;
     }
 } 

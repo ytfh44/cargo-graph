@@ -1,7 +1,8 @@
-use crate::graph::{FlowGraph, NodeType};
+use crate::graph::{FlowGraph, NodeType, LoopKind};
 use petgraph::graph::NodeIndex;
 use syn::{Block, Expr, ExprIf, ExprLoop, ExprMatch, ExprWhile, ItemFn, Stmt, ExprForLoop};
 use quote::quote;
+use crate::passes::ParserPass;
 
 pub struct ControlFlowAnalyzerPass<'a> {
     graph: &'a mut FlowGraph,
@@ -21,11 +22,11 @@ impl<'a> ControlFlowAnalyzerPass<'a> {
     }
     
     pub fn analyze_function(&mut self, func: &ItemFn) {
-        let fn_name = func.sig.ident.to_string();
+        let (fn_name, is_test) = ParserPass::get_function_info(func);
         
         // 创建函数开始和结束节点
-        let start_node = self.graph.add_node(NodeType::Start(fn_name.clone()));
-        let end_node = self.graph.add_node(NodeType::End(fn_name));
+        let start_node = self.graph.add_node(NodeType::Start(fn_name.clone(), is_test));
+        let end_node = self.graph.add_node(NodeType::End(fn_name, is_test));
         
         self.fn_start_node = Some(start_node);
         self.fn_end_node = Some(end_node);
@@ -112,42 +113,38 @@ impl<'a> ControlFlowAnalyzerPass<'a> {
 
     fn analyze_while(&mut self, expr_while: &ExprWhile, parent: NodeIndex) -> NodeIndex {
         // 创建循环入口节点
-        let loop_entry = self.graph.add_node(NodeType::BasicBlock("循环入口".to_string()));
-        self.graph.add_edge(parent, loop_entry, "进入循环".to_string());
-
-        // 创建条件节点
         let cond_text = format!("{}", quote!(#expr_while.cond));
-        let cond_node = self.graph.add_node(NodeType::Condition(cond_text));
-        self.graph.add_edge(loop_entry, cond_node, "检查条件".to_string());
+        let loop_node = self.graph.add_node(NodeType::Loop(LoopKind::While(cond_text)));
+        self.graph.add_edge(parent, loop_node, "进入循环".to_string());
 
         // 处理循环体
-        let body_node = self.analyze_block(&expr_while.body, Some(cond_node));
-        self.graph.add_edge(cond_node, body_node, "是".to_string());
+        let body_node = self.analyze_block(&expr_while.body, Some(loop_node));
+        self.graph.add_edge(loop_node, body_node, "是".to_string());
         
         // 创建循环回边
-        self.graph.add_edge(body_node, loop_entry, "继续循环".to_string());
+        self.graph.add_edge(body_node, loop_node, "继续循环".to_string());
 
         // 创建循环出口
         let exit_node = self.graph.add_node(NodeType::BasicBlock("循环结束".to_string()));
-        self.graph.add_edge(cond_node, exit_node, "否".to_string());
+        self.graph.add_edge(loop_node, exit_node, "否".to_string());
         
         exit_node
     }
 
     fn analyze_loop(&mut self, expr_loop: &ExprLoop, parent: NodeIndex) -> NodeIndex {
         // 创建循环入口节点
-        let loop_entry = self.graph.add_node(NodeType::Loop("无条件循环".to_string()));
-        self.graph.add_edge(parent, loop_entry, "进入循环".to_string());
+        let loop_node = self.graph.add_node(NodeType::Loop(LoopKind::Loop));
+        self.graph.add_edge(parent, loop_node, "进入循环".to_string());
 
         // 处理循环体
-        let body_node = self.analyze_block(&expr_loop.body, Some(loop_entry));
+        let body_node = self.analyze_block(&expr_loop.body, Some(loop_node));
         
         // 创建循环回边
-        self.graph.add_edge(body_node, loop_entry, "继续循环".to_string());
+        self.graph.add_edge(body_node, loop_node, "继续循环".to_string());
 
         // 创建循环出口（用于break语句）
         let exit_node = self.graph.add_node(NodeType::BasicBlock("循环结束".to_string()));
-        self.graph.add_edge(loop_entry, exit_node, "跳出循环".to_string());
+        self.graph.add_edge(loop_node, exit_node, "break".to_string());
         
         exit_node
     }
@@ -185,7 +182,7 @@ impl<'a> ControlFlowAnalyzerPass<'a> {
     fn analyze_for(&mut self, expr_for: &ExprForLoop, parent: NodeIndex) -> NodeIndex {
         // 创建for循环节点，显示迭代器表达式
         let loop_text = format!("for {} in {}", quote!(#expr_for.pat), quote!(#expr_for.expr));
-        let loop_node = self.graph.add_node(NodeType::Loop(loop_text));
+        let loop_node = self.graph.add_node(NodeType::Loop(LoopKind::For(loop_text)));
         self.graph.add_edge(parent, loop_node, "进入循环".to_string());
 
         // 分析循环体

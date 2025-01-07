@@ -1,5 +1,5 @@
-use crate::graph::FlowGraph;
-use crate::passes::ControlFlowAnalyzerPass;
+use crate::graph::{FlowGraph, GraphConfig};
+use crate::passes::{ControlFlowAnalyzerPass, ParserPass};
 use syn::ItemFn;
 
 pub struct GraphBuilderPass {
@@ -18,9 +18,19 @@ impl GraphBuilderPass {
             graph: FlowGraph::new(),
         }
     }
+
+    pub fn with_config(config: GraphConfig) -> Self {
+        Self {
+            graph: FlowGraph::with_config(config),
+        }
+    }
     
     pub fn build(functions: Vec<ItemFn>) -> FlowGraph {
-        let mut builder = Self::new();
+        Self::build_with_config(functions, GraphConfig::default())
+    }
+
+    pub fn build_with_config(functions: Vec<ItemFn>, config: GraphConfig) -> FlowGraph {
+        let mut builder = Self::with_config(config);
         let mut analyzer = ControlFlowAnalyzerPass::new(&mut builder.graph);
         
         for func in functions {
